@@ -31,21 +31,22 @@ const settings = definePluginSettings({
     }
 });
 
-function getBooleanOption(options: any[], name: string, fallback: boolean): boolean {
-    const opt = findOption(options, name);
-    const val = (opt && typeof opt === "object" && "value" in opt) ? (opt as { value: any }).value : undefined;
-    if (val === true || val === "true") return true;
-    if (val === false || val === "false") return false;
-    return fallback;
-}
-
 async function imageExists(url: string): Promise<boolean> {
     try {
-        const response = await fetch(url, { method: "HEAD" });
-        return (response.ok && response.headers.get("content-type")?.startsWith("image")) ?? false;
+        const res = await fetch(url);
+        return res.ok;
     } catch {
         return false;
     }
+}
+
+function getBooleanOption(options: any[], name: string, fallback: boolean): boolean {
+    const opt = options.find(o => o.name === name);
+    if (!opt) return fallback;
+    // Discord may send booleans as strings or actual booleans
+    if (opt.value === true || opt.value === "true") return true;
+    if (opt.value === false || opt.value === "false") return false;
+    return fallback;
 }
 
 async function getAuthorIcon(authorJson: any): Promise<string> {
@@ -53,14 +54,17 @@ async function getAuthorIcon(authorJson: any): Promise<string> {
     const snoovatarImg = authorJson?.data?.snoovatar_img?.split("?")[0].replace(/&amp;/g, "&") ?? null;
     const defaultIcon = "https://www.redditstatic.com/avatars/avatar_default_02_7193FF.png";
 
-    if (iconImg && await imageExists(iconImg)) {
-        return iconImg;
-    } else if (snoovatarImg && await imageExists(snoovatarImg)) {
-        return snoovatarImg;
-    } else {
-        return defaultIcon;
+    const fallbackCandidates = [iconImg, snoovatarImg, defaultIcon];
+
+    for (const url of fallbackCandidates) {
+        if (url && await imageExists(url)) {
+            return url;
+        }
     }
+
+    return defaultIcon;
 }
+
 
 function makeCommand(name: string): Command {
     return {
@@ -73,13 +77,14 @@ function makeCommand(name: string): Command {
             { name: "silent", displayName: "Silent", description: "Only you can see the result", required: false, type: 5 }
         ],
         async execute(options, ctx) {
-            const useNSFW = getBooleanOption(options, "nsfw", false);
-            const silent = getBooleanOption(options, "silent", true);
+            const useNSFW = getBooleanOption(options, "nsfw", false) || findOption(options, "nsfw");
+            const silent = getBooleanOption(options, "silent", true) || findOption(options, "silent");
             const sortOption = findOption(options, "sort");
             const sort = sortOption && typeof (sortOption as any).value === "string"
                 ? (sortOption as any).value
                 : settings.store.SortBy;
 
+            logger.log("Options received:", options);
             logger.log("Command options:", { useNSFW, silent, sort });
 
             if (!ctx.channel) return;
@@ -171,6 +176,6 @@ export default definePlugin({
     authors: [Devs.omnifla],
     settings,
     commands: [makeCommand("femboy")],
-    start() {},
-    stop() {},
+    start() { },
+    stop() { },
 });
