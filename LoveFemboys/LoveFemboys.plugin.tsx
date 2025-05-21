@@ -4,7 +4,12 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { ApplicationCommandInputType, Command, findOption, sendBotMessage } from "@api/Commands";
+import {
+    ApplicationCommandInputType,
+    Command,
+    findOption,
+    sendBotMessage
+} from "@api/Commands";
 import { definePluginSettings, OptionType } from "@api/Settings";
 import { Devs } from "@utils/constants";
 import { sendMessage } from "@utils/discord";
@@ -26,13 +31,35 @@ const settings = definePluginSettings({
     }
 });
 
-// Type-safe boolean fallback helper
 function getBooleanOption(options: any[], name: string, fallback: boolean): boolean {
     const opt = findOption(options, name);
-    if (opt && typeof opt === "object" && "value" in opt && typeof (opt as { value: unknown }).value === "boolean") {
-        return (opt as { value: boolean }).value;
-    }
+    const val = (opt && typeof opt === "object" && "value" in opt) ? (opt as { value: any }).value : undefined;
+    if (val === true || val === "true") return true;
+    if (val === false || val === "false") return false;
     return fallback;
+}
+
+async function imageExists(url: string): Promise<boolean> {
+    try {
+        const response = await fetch(url, { method: "HEAD" });
+        return (response.ok && response.headers.get("content-type")?.startsWith("image")) ?? false;
+    } catch {
+        return false;
+    }
+}
+
+async function getAuthorIcon(authorJson: any): Promise<string> {
+    const iconImg = authorJson?.data?.icon_img?.split("?")[0].replace(/&amp;/g, "&") ?? null;
+    const snoovatarImg = authorJson?.data?.snoovatar_img?.split("?")[0].replace(/&amp;/g, "&") ?? null;
+    const defaultIcon = "https://www.redditstatic.com/avatars/avatar_default_02_7193FF.png";
+
+    if (iconImg && await imageExists(iconImg)) {
+        return iconImg;
+    } else if (snoovatarImg && await imageExists(snoovatarImg)) {
+        return snoovatarImg;
+    } else {
+        return defaultIcon;
+    }
 }
 
 function makeCommand(name: string): Command {
@@ -46,16 +73,22 @@ function makeCommand(name: string): Command {
             { name: "silent", displayName: "Silent", description: "Only you can see the result", required: false, type: 5 }
         ],
         async execute(options, ctx) {
-            if (!ctx.channel) return;
-
             const useNSFW = getBooleanOption(options, "nsfw", false);
-            const silent = getBooleanOption(options, "silent", true); // fallback is true
-            const sort = (findOption(options, "sort") as { value: string } | undefined)?.value ?? settings.store.SortBy;
+            const silent = getBooleanOption(options, "silent", true);
+            const sortOption = findOption(options, "sort");
+            const sort = sortOption && typeof (sortOption as any).value === "string"
+                ? (sortOption as any).value
+                : settings.store.SortBy;
 
             logger.log("Command options:", { useNSFW, silent, sort });
 
-            if (useNSFW && settings.store.nsfwWarn && !ctx.channel.nsfw) {
-                sendBotMessage(ctx.channel.id, { content: "Cannot send NSFW content in a non-NSFW channel." });
+            if (!ctx.channel) return;
+            const isNSFWChannel = ctx.channel.nsfw;
+
+            if (useNSFW && settings.store.nsfwWarn && !isNSFWChannel) {
+                sendBotMessage(ctx.channel.id, {
+                    content: "Cannot send NSFW content in a non-NSFW channel."
+                });
                 return;
             }
 
@@ -67,15 +100,16 @@ function makeCommand(name: string): Command {
                 const json = await res.json();
 
                 const posts = json.data?.children
-                    .map(p => p.data)
-                    .filter(p =>
+                    .map((p: any) => p.data)
+                    .filter((p: any) =>
                         typeof p.url_overridden_by_dest === "string" &&
-                        /\.(png|jpg|jpeg|gif)$/.test(p.url_overridden_by_dest)
+                        /\.(png|jpg|jpeg|gif|gifv)$/.test(p.url_overridden_by_dest)
                     );
 
-                if (!posts?.length) {
-                    logger.log("No valid posts found in subreddit:", subreddit);
-                    sendBotMessage(ctx.channel.id, { content: "No valid image posts found." });
+                if (!posts || posts.length === 0) {
+                    sendBotMessage(ctx.channel.id, {
+                        content: "No valid posts found. Falling back to default subreddit."
+                    });
                     return;
                 }
 
@@ -83,38 +117,44 @@ function makeCommand(name: string): Command {
                 const imageUrl = post.url_overridden_by_dest.replace(/\.gifv$/, ".gif");
                 const postUrl = `https://reddit.com${post.permalink}`;
 
+                // Fetch author info for icon
                 const authorRes = await fetch(`https://www.reddit.com/user/${post.author}/about.json`);
                 const authorJson = await authorRes.json();
-                const authorIcon = authorJson?.data?.icon_img?.split("?")[0] ?? "https://www.redditstatic.com/avatars/avatar_default_01_24A0A1.png";
+                const authorIcon = await getAuthorIcon(authorJson);
+
+                const embed = {
+                    type: "rich",
+                    title: post.title,
+                    rawTitle: post.title,
+                    url: postUrl,
+                    author: {
+                        name: `u/${post.author} • r/${post.subreddit}`,
+                        iconURL: authorIcon,
+                        iconProxyURL: undefined,
+                        url: postUrl
+                    },
+                    image: {
+                        url: imageUrl,
+                        proxyURL: imageUrl,
+                        height: 0,
+                        width: 0
+                    },
+                    color: "16042180",
+                    id: crypto.randomUUID(),
+                    rawDescription: "",
+                    referenceId: null,
+                    fields: [] as []
+                };
 
                 if (silent) {
-                    sendBotMessage(ctx.channel.id, {
-                        embeds: [{
-                            type: "rich",
-                            rawTitle: post.title,
-                            url: postUrl,
-                            author: {
-                                name: `u/${post.author} • r/${post.subreddit}`,
-                                iconURL: authorIcon,
-                                iconProxyURL: undefined,
-                                url: postUrl
-                            },
-                            image: {
-                                url: imageUrl,
-                                proxyURL: imageUrl,
-                                height: 0,
-                                width: 0
-                            },
-                            color: "16053476", // hex f4b8e4
-                            id: crypto.randomUUID(),
-                            rawDescription: "",
-                            referenceId: null,
-                            fields: [] // Required
-                        }]
-                    });
+                    logger.log("Sending silently (bot embed only)");
+                    sendBotMessage(ctx.channel.id, { embeds: [embed] });
                 } else {
-                    // User sends image as plain message
+                    logger.log("Sending publicly (user post + bot embed)");
+                    // User posts image (visible to everyone)
                     sendMessage(ctx.channel.id, { content: imageUrl });
+                    // Bot follows with embed (for context)
+                    sendBotMessage(ctx.channel.id, { embeds: [embed] });
                 }
 
             } catch (err) {
@@ -130,5 +170,7 @@ export default definePlugin({
     description: "Get a post of a femboy from Reddit.",
     authors: [Devs.omnifla],
     settings,
-    commands: [makeCommand("femboy")]
+    commands: [makeCommand("femboy")],
+    start() {},
+    stop() {},
 });
